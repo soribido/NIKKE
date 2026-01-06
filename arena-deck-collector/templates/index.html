@@ -1,0 +1,423 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <title>PvP 덱 수집기</title>
+  <style>
+    body { font-family:sans-serif; margin:0; padding:0; }
+    #slots-container {
+      display:grid;
+      grid-template-columns:repeat(2,320px);
+      grid-template-rows:repeat(6,100px);
+      gap:5px; justify-content:center; margin:10px 0;
+    }
+    .info-slot, .deck-slot {
+      width:320px; height:100px; background:#eee;
+      position:relative; cursor:pointer;
+    }
+    .selected { outline:3px solid red; }
+    .info-slot img, .deck-slot img {
+      width:100%; height:100%; object-fit:cover;
+    }
+    .loss img { filter:grayscale(100%) opacity(0.5); }
+    #buttons {
+      text-align:center; margin:10px 0;
+    }
+    #buttons button, #buttons input[type="text"] {
+      margin:0 8px; padding:8px 16px; font-size:14px;
+    }
+    #buttons input[type="text"] { width:100px; }
+    #buttons-reset {
+      text-align:center; margin-bottom:10px;
+    }
+    #buttons-reset button {
+      margin:0 8px; padding:6px 14px;
+      background:#f2f2f2; border:1px solid #ccc; cursor:pointer;
+    }
+    #buttons-reset button:hover { background:#e0e0e0; }
+    #upload-container { text-align:center; margin-bottom:10px; }
+    #overlay {
+      position:fixed; top:0; left:0;
+      width:100%; height:100%;
+      background:rgba(0,0,0,0.2);
+      cursor:crosshair; z-index:1000;
+    }
+  </style>
+</head>
+<body>
+
+  <div id="slots-container">
+    <div class="info-slot" id="user-0"><img id="user-img-0"></div>
+    <div class="info-slot" id="user-1"><img id="user-img-1"></div>
+    <div class="deck-slot"   id="deck-0"><img id="img-0"></div>
+    <div class="deck-slot"   id="deck-5"><img id="img-5"></div>
+    <div class="deck-slot"   id="deck-1"><img id="img-1"></div>
+    <div class="deck-slot"   id="deck-6"><img id="img-6"></div>
+    <div class="deck-slot"   id="deck-2"><img id="img-2"></div>
+    <div class="deck-slot"   id="deck-7"><img id="img-7"></div>
+    <div class="deck-slot"   id="deck-3"><img id="img-3"></div>
+    <div class="deck-slot"   id="deck-8"><img id="img-8"></div>
+    <div class="deck-slot"   id="deck-4"><img id="img-4"></div>
+    <div class="deck-slot"   id="deck-9"><img id="img-9"></div>
+  </div>
+
+  <div id="buttons">
+    <button id="btn-define">범위 지정</button>
+    <button id="btn-capture">캡처</button>
+    <button id="btn-record">승패 기록 OFF</button>
+    <input  type="text"    id="filename-suffix" placeholder="파일명 추가">
+    <button id="btn-save">그림으로 저장</button>
+  </div>
+
+  <div id="buttons-reset">
+    <button id="btn-reset-user">유저 초기화</button>
+    <button id="btn-reset-deck">덱 초기화</button>
+  </div>
+
+  <div id="upload-container">
+    <button id="btn-upload">Composite 업로드</button>
+    <input type="file" id="upload-input" accept="image/png, image/jpeg" style="display:none">
+  </div>
+
+  <script>
+    // --- 상태 변수 ---
+    let lossFlags       = Array(10).fill(false);
+    let selectedDeck    = null, selectedUser = null;
+    let recordMode      = false;
+    let compositeLoaded = false;
+    let compositeImg, cw, ch;
+
+    // 서버와 동기화할 영역 저장소
+    const regionUser = {}, regionDeck = {};
+
+    // 영역 불러오기
+    async function loadRegions() {
+      const res = await fetch('/get_regions').then(r => r.json());
+      Object.assign(regionUser, res.user);
+      Object.assign(regionDeck, res.deck);
+    }
+    loadRegions();
+
+    // off-screen composite 이미지
+    compositeImg = new Image();
+    compositeImg.style.display = 'none';
+    document.body.appendChild(compositeImg);
+
+    // 슬롯 선택 해제
+    function clearAllSel(){
+      [0,1].forEach(u => {
+        document.getElementById(`user-${u}`).classList.remove('selected');
+      });
+      for(let i=0;i<10;i++){
+        document.getElementById(`deck-${i}`).classList.remove('selected');
+      }
+      selectedUser = selectedDeck = null;
+    }
+
+    // 1) 슬롯 클릭
+    [0,1].forEach(uid => {
+      document.getElementById(`user-${uid}`)
+        .addEventListener('click', () => {
+          if(recordMode) return;
+          if(selectedUser===uid){
+            selectedUser = null;
+            event.currentTarget.classList.remove('selected');
+          } else {
+            clearAllSel();
+            selectedUser = uid;
+            event.currentTarget.classList.add('selected');
+          }
+        });
+    });
+    for(let i=0;i<10;i++){
+      document.getElementById(`deck-${i}`)
+        .addEventListener('click', () => {
+          if(recordMode){
+            lossFlags[i] = !lossFlags[i];
+            event.currentTarget.classList.toggle('loss');
+            return;
+          }
+          if(selectedDeck===i){
+            selectedDeck = null;
+            event.currentTarget.classList.remove('selected');
+          } else {
+            clearAllSel();
+            selectedDeck = i;
+            event.currentTarget.classList.add('selected');
+          }
+        });
+    }
+
+    // 2) 승패 기록 토글
+    document.getElementById('btn-record')
+      .addEventListener('click', () => {
+        recordMode = !recordMode;
+        document.getElementById('btn-record')
+                .innerText = `승패 기록 ${recordMode?'ON':'OFF'}`;
+      });
+
+    // 3) 범위 지정
+    document.getElementById('btn-define')
+      .addEventListener('click', async () => {
+        if(selectedUser===null && selectedDeck===null){
+          return alert('먼저 캡처할 셀을 선택하세요.');
+        }
+        // 영역 동기화
+        await loadRegions();
+        const { image } = await fetch('/screenshot').then(r => r.json());
+        showOverlay(image, selectedUser!==null
+          ? {type:'user', id:selectedUser}
+          : {type:'deck', id:selectedDeck}
+        );
+      });
+
+    // showOverlay: 이전 영역을 미리 그려주고 드래그 처리
+    function showOverlay(dataURL, target){
+      const ov = document.createElement('div');
+      ov.id = 'overlay';
+      ov.innerHTML = '<canvas id="selCanvas"></canvas>';
+      document.body.appendChild(ov);
+
+      const canv = document.getElementById('selCanvas'),
+            ctx  = canv.getContext('2d');
+      canv.width  = window.innerWidth;
+      canv.height = window.innerHeight;
+
+      const img = new Image();
+      let x0, y0, dragging = false;
+
+      img.onload = () => {
+        ctx.drawImage(img, 0,0, canv.width, canv.height);
+        // 이전 영역 미리 그림
+        const r = (target.type==='user'
+                   ? regionUser[target.id]
+                   : regionDeck[target.id]);
+        if(r){
+          const scaleX = img.naturalWidth  / canv.width;
+          const scaleY = img.naturalHeight / canv.height;
+          const rx = r.x/scaleX, ry = r.y/scaleY,
+                rw = r.w/scaleX, rh = r.h/scaleY;
+          ctx.strokeStyle = 'red';
+          ctx.lineWidth = 2;
+          ctx.strokeRect(rx, ry, rw, rh);
+          x0 = rx; y0 = ry;
+        }
+      };
+      img.src = dataURL;
+
+      ov.onmousedown = e => {
+        x0 = e.clientX; y0 = e.clientY; dragging = true;
+      };
+      ov.onmousemove = e => {
+        if(!dragging) return;
+        ctx.clearRect(0,0, canv.width, canv.height);
+        ctx.drawImage(img, 0,0, canv.width, canv.height);
+        ctx.strokeStyle='red'; ctx.lineWidth=2;
+        ctx.strokeRect(x0, y0, e.clientX-x0, e.clientY-y0);
+      };
+      ov.onmouseup = async e => {
+        dragging = false;
+        const scaleX = img.naturalWidth  / canv.width;
+        const scaleY = img.naturalHeight / canv.height;
+        const x = Math.round(x0 * scaleX),
+              y = Math.round(y0 * scaleY),
+              w = Math.round((e.clientX - x0) * scaleX),
+              h = Math.round((e.clientY - y0) * scaleY);
+
+        const url  = (target.type==='user') ? '/set_user_region' : '/set_region';
+        const body = (target.type==='user')
+                   ? JSON.stringify({ userId: target.id, x, y, w, h })
+                   : JSON.stringify({ deckId: target.id,  x, y, w, h });
+
+        await fetch(url, {
+          method:'POST',
+          headers:{'Content-Type':'application/json'},
+          body
+        });
+        // 영역 정보 동기화
+        await loadRegions();
+        document.body.removeChild(ov);
+        alert(`${target.type==='user'?'User ':'Deck '}${target.id} 영역 저장됨`);
+      };
+    }
+
+    // ─ 캡처 (screenshot 또는 composite crop) ─────────
+    document.getElementById('btn-capture')
+      .addEventListener('click', async ()=>{
+        // composite 로드된 경우
+        if(compositeLoaded){
+          // user
+          if(selectedUser!==null){
+            const id=selectedUser;
+            const x0 = id * cw, y0 = 0 * ch;
+            await cropAndUpload('user', id, x0, y0);
+            selectNext('user', id);
+            return;
+          }
+          // deck
+          if(selectedDeck!==null){
+            const id=selectedDeck;
+            const row = (id<5? id+1 : (id%5)+1),
+                  col = id<5? 0:1;
+            const x0 = col*cw, y0=row*ch;
+            await cropAndUpload('deck', id, x0, y0);
+            selectNext('deck', id);
+            return;
+          }
+          return alert('먼저 슬롯을 선택하세요.');
+        }
+        // screenshot flow
+        if(selectedUser!==null){
+          const uid=selectedUser;
+          const res=await fetch(`/capture_user?userId=${uid}`)
+                        .then(r=>r.json());
+          if(res.error) return alert(res.error);
+          document.getElementById(`user-img-${uid}`).src=res.image;
+          // 다음 선택
+          selectNext('user',uid);
+          return;
+        }
+        if(selectedDeck!==null){
+          const did=selectedDeck;
+          const res=await fetch(`/capture_deck?deckId=${did}`)
+                        .then(r=>r.json());
+          if(res.error) return alert(res.error);
+          document.getElementById(`img-${did}`).src=res.image;
+          selectNext('deck',did);
+          return;
+        }
+        alert('먼저 슬롯을 선택하세요.');
+      });
+
+    async function cropAndUpload(type, id, x0, y0){
+      const canvas = document.createElement('canvas');
+      canvas.width = cw; canvas.height = ch;
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(compositeImg, x0,y0,cw,ch, 0,0,cw,ch);
+      const dataURL = canvas.toDataURL('image/png');
+      // 화면 반영
+      if(type==='user'){
+        document.getElementById(`user-img-${id}`).src=dataURL;
+      } else {
+        document.getElementById(`img-${id}`).src=dataURL;
+      }
+      // 서버 저장
+      await fetch('/upload_slot',{
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({type,id,image:dataURL})
+      });
+      // 해제
+      if(type==='user'){
+        document.getElementById(`user-${id}`).classList.remove('selected');
+      } else {
+        document.getElementById(`deck-${id}`).classList.remove('selected');
+      }
+    }
+    function selectNext(type, id){
+      // 순서: user0 -> deck0-4 -> user1 -> deck5-9
+      const sequence = [
+        {type:'user', id:0},
+        {type:'deck', id:0}, {type:'deck', id:1}, {type:'deck', id:2},
+        {type:'deck', id:3}, {type:'deck', id:4},
+        {type:'user', id:1},
+        {type:'deck', id:5}, {type:'deck', id:6}, {type:'deck', id:7},
+        {type:'deck', id:8}, {type:'deck', id:9}
+      ];
+
+      // 현재 선택 해제
+      if(type === 'user'){
+        document.getElementById(`user-${id}`).classList.remove('selected');
+      } else {
+        document.getElementById(`deck-${id}`).classList.remove('selected');
+      }
+
+      // 현재 위치 찾기
+      const currentIdx = sequence.findIndex(s => s.type===type && s.id===id);
+      if(currentIdx === -1 || currentIdx === sequence.length-1){
+        selectedUser = selectedDeck = null;
+        return;
+      }
+
+      // 다음 항목 선택
+      const next = sequence[currentIdx + 1];
+      if(next.type === 'user'){
+        selectedUser = next.id;
+        selectedDeck = null;
+        document.getElementById(`user-${next.id}`).classList.add('selected');
+      } else {
+        selectedDeck = next.id;
+        selectedUser = null;
+        document.getElementById(`deck-${next.id}`).classList.add('selected');
+      }
+    }
+
+    // ─ Composite 업로드 ────────────────────────────
+    document.getElementById('btn-upload')
+      .addEventListener('click', ()=>document.getElementById('upload-input').click());
+    document.getElementById('upload-input')
+      .addEventListener('change', function(){
+        const file = this.files[0];
+        if(!file) return;
+        const reader = new FileReader();
+        reader.onload = e=>{
+          compositeImg.src = e.target.result;
+          compositeImg.onload = ()=>{
+            cw = compositeImg.naturalWidth/2;
+            ch = compositeImg.naturalHeight/6;
+            compositeLoaded = true;
+            alert('Composite 이미지 로드 완료');
+          };
+        };
+        reader.readAsDataURL(file);
+      });
+
+    // ─ 초기화 ─────────────────────────────────────
+    document.getElementById('btn-reset-user')
+      .addEventListener('click', async () => {
+        await fetch('/reset_user_images',{method:'POST'});
+        [0,1].forEach(u => {
+          document.getElementById(`user-img-${u}`).src = '';
+          document.getElementById(`user-${u}`).classList.remove('selected');
+        });
+        selectedUser = null;
+        // 영역 정보는 그대로 두고, 클라이언트 캐시만 동기화
+        await loadRegions();
+      });
+
+    document.getElementById('btn-reset-deck')
+      .addEventListener('click', async () => {
+        await fetch('/reset_deck_images',{method:'POST'});
+        for(let i=0;i<10;i++){
+          document.getElementById(`img-${i}`).src = '';
+          const el = document.getElementById(`deck-${i}`);
+          el.classList.remove('selected','loss');
+        }
+        selectedDeck = null;
+        recordMode = false;
+        document.getElementById('btn-record').innerText = '승패 기록 OFF';
+        lossFlags = Array(10).fill(false);
+        await loadRegions();
+      });
+
+    // ─ 저장 ───────────────────────────────────────
+    document.getElementById('btn-save')
+      .addEventListener('click', async () => {
+        const suffix = document.getElementById('filename-suffix').value.trim();
+        const res = await fetch('/save',{
+          method:'POST',
+          headers:{'Content-Type':'application/json'},
+          body: JSON.stringify({ lossFlags, suffix })
+        }).then(r=>r.json());
+        if(res.error) alert(res.error);
+        else        alert(`저장 완료:\n raw → ${res.raw}\n annotated → ${res.annotated}`);
+      });
+
+    // ─ 단축키 Ctrl+Shift+C ─────────────────────────
+    document.addEventListener('keydown', e=>{
+      if(e.ctrlKey && e.shiftKey && e.code==='KeyC')
+        document.getElementById('btn-capture').click();
+    });
+  </script>
+</body>
+</html>

@@ -1,0 +1,62 @@
+# Custom
+saved_images/
+
+# === Python ===
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# Compiled C extensions
+*.so
+
+# Virtual environments
+.env
+.venv
+env/
+venv/
+ENV/
+.venv*/
+env*/
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
+.eggs/
+*.egg
+
+# Logs
+*.log
+
+# Unit test / coverage reports
+htmlcov/
+.coverage
+.coverage.*
+.cache
+pytest_cache/
+nosetests.xml
+coverage.xml
+*.cover
+*.py,cover
+
+# Jupyter Notebook
+.ipynb_checkpoints/
+*.ipynb_convert
+
+# IDE / Editor settings
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS-specific files
+.DS_Store
+Thumbs.db
+
+# Temporary files
+*.tmp
+*.bak
+*.orig
+
+
